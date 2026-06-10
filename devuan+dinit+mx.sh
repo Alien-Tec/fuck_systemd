@@ -1,6 +1,6 @@
 #!/bin/bash
 # Devuan 6 "Excalibur" -> Dinit Transition + Minimal MX-Tools
-# 2026 Script Edition
+# Copyright 2026 Alien-Tec.com
 
 if [ "$EUID" -ne 0 ]; then
   echo "Bitte als root ausführen!"
@@ -8,68 +8,84 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 echo "===================================================================="
-echo " START: DEVUAN 6 -> DINIT + MX-SNAPSHOT & MX-INSTALLER"
+echo " START: DEVUAN 6 (EXCALIBUR) -> DINIT + MX-SNAPSHOT & MX-INSTALLER"
 echo "===================================================================="
 echo
 
 # --------------------------------------------------------------------
-# SCHRITT 1: Repositories für Dinit & MX-Linux einbinden
+# SCHRITT 1: Repositories & Schlüssel sauber einrichten
 # --------------------------------------------------------------------
-echo "--> Füge Dinit-on-Devuan und MX-Linux Repositories hinzu..."
+echo "--> Installiere benötigte Basiswerkzeuge..."
+apt-get update && apt-get install -y wget gnupg dirmngr dpkg-dev
 
-# MX-Linux Paketquelle für MX-25 (basiert auf Debian 13 / Excalibur)
-echo "deb http://debian.nz excalibur main non-free" > /etc/apt/sources.list.d/mx-linux.list
+echo "--> Bereite Schlüsselverzeichnis vor..."
+mkdir -p /etc/apt/keyrings
 
-# Dinit-on-Devuan Paketquelle (Excalibur Zweig)
-echo "deb https://githubusercontent.com excalibur main" > /etc/apt/sources.list.d/dinit-devuan.list
+echo "--> Konfiguriere Devuan 6 Excalibur Hauptquellen..."
+cat <<EOF > /etc/apt/sources.list
+deb http://devuan.org excalibur main contrib non-free non-free-firmware
+deb http://devuan.org excalibur-security main contrib non-free non-free-firmware
+deb http://devuan.org excalibur-updates main contrib non-free non-free-firmware
+deb http://devuan.org excalibur-proposed main contrib non-free non-free-firmware
+EOF
 
-# Schlüssel für Repositories holen
-echo "--> Importiere Repository-Schlüssel..."
-apt-get install -y dirmngr gnupg wget
-apt-key adv --keyserver ://ubuntu.com --recv-keys F06FE91741DB5DA0 2>/dev/null
+echo "--> Hole MX-Linux (Trixie) Repository-Schlüssel..."
+# Wir laden das offizielle Keyring-Paket von MX Linux direkt aus dem Pool herunter
+wget -q http://mxrepo.com -O /tmp/mx-keyring.deb
 
-# Paketlisten aktualisieren
+if [ -f /tmp/mx-keyring.deb ]; then
+  # Schlüssel extrahieren und an den sicheren Ort verschieben
+  dpkg-deb -x /tmp/mx-keyring.deb /tmp/mx-keyring-extracted
+  cp /tmp/mx-keyring-extracted/usr/share/keyrings/mx-archive-keyring.gpg /etc/apt/keyrings/mx-archive-keyring.gpg
+  rm -rf /tmp/mx-keyring*
+  echo "    [OK] MX-Schlüssel erfolgreich hinterlegt."
+else
+  echo "    [FEHLER] Konnte MX-Keyring-Paket nicht herunterladen!"
+  exit 1
+fi
+
+echo "--> Konfiguriere MX-Linux 25 (Trixie) Werkzeugquellen..."
+# Wir binden die MX-Tools ein und verknüpfen sie direkt mit dem gerade extrahierten GPG-Schlüssel
+echo "deb [signed-by=/etc/apt/keyrings/mx-archive-keyring.gpg] http://mxrepo.com/mx/repo/ trixie main ahs" > /etc/apt/sources.list.d/mx-tools.list
+
+echo "--> Aktualisiere Paketlisten..."
 apt-get update
 
 # --------------------------------------------------------------------
 # SCHRITT 2: Dinit Kernkomponenten installieren
 # --------------------------------------------------------------------
-echo "--> Installiere Dinit Core und Basisskripte..."
-apt-get install -y dinit dinit-services dinitscripts
+echo "--> Installiere Dinit Core und das Umschaltpaket dinit-sysv..."
+# dinit-sysv stellt sicher, dass SysV-Skripte sauber an Dinit übergeben werden
+apt-get install -y dinit dinit-sysv
 
 # --------------------------------------------------------------------
 # SCHRITT 3: Nur MX-Snapshot & MX-Installer installieren
 # --------------------------------------------------------------------
-echo "--> Installiere MX-Repository-Keyring..."
-apt-get install -y mx-repository-keyring
-apt-get update
-
 echo "--> Installiere gezielt mx-snapshot und mx-installer..."
-# mx-installer zieht mx-live-usb-maker automatisch als Abhängigkeit mit
-apt-get install -y mx-snapshot mx-installer
+# --no-install-recommends verhindert, dass unbemerkt systemd-Pakete aus den MX-Quellen mitgezogen werden
+apt-get install -y --no-install-recommends mx-snapshot mx-installer
+
 if [ $? -ne 0 ]; then
   echo "Fehler bei der Installation der MX-Komponenten!"
   exit 1
 fi
 
 # --------------------------------------------------------------------
-# SCHRITT 4: Bootloader (GRUB) auf Dinit umstellen
+# SCHRITT 4: Bootloader (GRUB) aktualisieren
 # --------------------------------------------------------------------
-echo "--> Konfiguriere GRUB-Bootloader für Dinit als PID 1..."
+echo "--> Aktualisiere GRUB-Bootloader..."
 if [ -f /etc/default/grub ]; then
   cp /etc/default/grub /etc/default/grub.bak
-  
-  if ! grep -q "init=/sbin/dinit" /etc/default/grub; then
-    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="init=\/sbin\/dinit /' /etc/default/grub
-  fi
+  # Das Paket dinit-sysv verknüpft /sbin/init um. Ein einfaches update-grub reicht aus.
   update-grub
 else
-  echo "WARNUNG: /etc/default/grub nicht gefunden!"
+  echo "WARNUNG: /etc/default/grub nicht gefunden! Bootloader-Update übersprungen."
 fi
 
 echo "===================================================================="
-echo " FERTIG! Das System wurde erfolgreich angepasst."
-echo " - MX-Snapshot und MX-Installer sind einsatzbereit."
+echo " FERTIG! Die Paketquellen wurden perfekt synchronisiert."
+echo " - Devuan arbeitet auf der Basis 'excalibur'"
+echo " - MX-Tools werden aus der Basis 'trixie' bezogen"
 echo " - Dinit übernimmt beim nächsten Bootvorgang die Kontrolle."
 echo "===================================================================="
 read -n 1 -p "Drücken Sie ENTER für den Neustart... "
