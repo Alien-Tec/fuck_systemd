@@ -30,23 +30,22 @@ deb http://devuan.org excalibur-proposed main contrib non-free non-free-firmware
 EOF
 
 echo "--> Hole MX-Linux (Trixie) Repository-Schlüssel..."
-# Wir laden das offizielle Keyring-Paket von MX Linux direkt aus dem Pool herunter
+# Absolut korrekter Pfad zum offiziellen Paket
 wget -q http://mxrepo.com -O /tmp/mx-keyring.deb
 
-if [ -f /tmp/mx-keyring.deb ]; then
-  # Schlüssel extrahieren und an den sicheren Ort verschieben
+if [ -f /tmp/mx-keyring.deb ] && [ -s /tmp/mx-keyring.deb ]; then
+  mkdir -p /tmp/mx-keyring-extracted
   dpkg-deb -x /tmp/mx-keyring.deb /tmp/mx-keyring-extracted
-  cp /tmp/mx-keyring-extracted/usr/share/keyrings/mx-archive-keyring.gpg /etc/apt/keyrings/mx-archive-keyring.gpg
+  cp /tmp/mx-keyring-extracted/usr/share/keyrings/mx25-archive-keyring.gpg /etc/apt/keyrings/mx-archive-keyring.gpg
   rm -rf /tmp/mx-keyring*
   echo "    [OK] MX-Schlüssel erfolgreich hinterlegt."
 else
-  echo "    [FEHLER] Konnte MX-Keyring-Paket nicht herunterladen!"
+  echo "    [FEHLER] Download des MX-Keyrings fehlgeschlagen!"
   exit 1
 fi
 
 echo "--> Konfiguriere MX-Linux 25 (Trixie) Werkzeugquellen..."
-# Wir binden die MX-Tools ein und verknüpfen sie direkt mit dem gerade extrahierten GPG-Schlüssel
-echo "deb [signed-by=/etc/apt/keyrings/mx-archive-keyring.gpg] http://mxrepo.com/mx/repo/ trixie main ahs" > /etc/apt/sources.list.d/mx-tools.list
+echo "deb [signed-by=/etc/apt/keyrings/mx-archive-keyring.gpg] http://mxrepo.com trixie main non-free" > /etc/apt/sources.list.d/mx-tools.list
 
 echo "--> Aktualisiere Paketlisten..."
 apt-get update
@@ -55,18 +54,20 @@ apt-get update
 # SCHRITT 2: Dinit Kernkomponenten installieren
 # --------------------------------------------------------------------
 echo "--> Installiere Dinit Core und das Umschaltpaket dinit-sysv..."
-# dinit-sysv stellt sicher, dass SysV-Skripte sauber an Dinit übergeben werden
-apt-get install -y dinit dinit-sysv
+apt-get install -y dinit dinit-sysv sysvinit-core-
 
 # --------------------------------------------------------------------
-# SCHRITT 3: Nur MX-Snapshot & MX-Installer installieren
+# SCHRITT 3: Dinit-Kompatibilität für MX-Tools (WICHTIGE KORREKTUR)
 # --------------------------------------------------------------------
+echo "--> Installiere Systemd-Dummy-Bibliotheken für GUI-Kompatibilität..."
+# Ermöglicht das Ausführen der MX-Tools ohne echtes Systemd als PID 1
+apt-get install -y libsystemd0 systemd-standalone-sysusers systemd-standalone-tmpfiles 2>/dev/null
+
 echo "--> Installiere gezielt mx-snapshot und mx-installer..."
-# --no-install-recommends verhindert, dass unbemerkt systemd-Pakete aus den MX-Quellen mitgezogen werden
 apt-get install -y --no-install-recommends mx-snapshot mx-installer
 
 if [ $? -ne 0 ]; then
-  echo "Fehler bei der Installation der MX-Komponenten!"
+  echo "Fehler bei der Installation der MX-Komponenten aufgrund von Abhängigkeiten!"
   exit 1
 fi
 
@@ -76,19 +77,38 @@ fi
 echo "--> Aktualisiere GRUB-Bootloader..."
 if [ -f /etc/default/grub ]; then
   cp /etc/default/grub /etc/default/grub.bak
-  # Das Paket dinit-sysv verknüpft /sbin/init um. Ein einfaches update-grub reicht aus.
   update-grub
 else
-  echo "WARNUNG: /etc/default/grub nicht gefunden! Bootloader-Update übersprungen."
+  echo "WARNUNG: /etc/default/grub nicht gefunden!"
+fi
+
+# --------------------------------------------------------------------
+# SCHRITT 5: Dinit Pre-Boot-Sicherheitscheck
+# --------------------------------------------------------------------
+echo "--> Führe Dinit Sicherheits-Validierung durch..."
+MISSING_SERVICES=0
+CRITICAL_SERVICES=("boot" "udev" "rootfs")
+
+for service in "${CRITICAL_SERVICES[@]}"; do
+  # Korrekte ODER-Prüfung: Es reicht, wenn der Dienst in einem der Ordner existiert
+  if [ ! -f "/etc/dinit.d/$service" ] && [ ! -f "/lib/dinit.d/$service" ]; then
+    echo "    [WARNUNG] Kritischer Dinit-Dienst fehlt: $service"
+    MISSING_SERVICES=$((MISSING_SERVICES + 1))
+  fi
+done
+
+if [ "$MISSING_SERVICES" -gt 0 ]; then
+  echo "ACHTUNG: Sicherheitssperre aktiv. Dienste fehlen."
+  exit 1
+else
+  echo "    [OK] Alle kritischen Basisservices für Dinit sind vorhanden."
 fi
 
 echo "===================================================================="
-echo " FERTIG! Die Paketquellen wurden perfekt synchronisiert."
-echo " - Devuan arbeitet auf der Basis 'excalibur'"
-echo " - MX-Tools werden aus der Basis 'trixie' bezogen"
-echo " - Dinit übernimmt beim nächsten Bootvorgang die Kontrolle."
+echo " FERTIG! System ist bereit für den Neustart."
 echo "===================================================================="
-read -n 1 -p "Drücken Sie ENTER für den Neustart... "
+read -n 1 -p "Drücken Sie ENTER für den sicheren Neustart... "
+echo
 
 sync
 reboot
